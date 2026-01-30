@@ -94,7 +94,7 @@ class AffineGameWorker:
     """
     def __init__(self, worker_id, server_url, max_interactions, game_name, opponent, timeout):
         self.worker_id = worker_id
-        self.server_url = server_url.rstrip('/')
+        self.server_url = str(server_url).rstrip('/')
         self.max_interactions = max_interactions
         self.game_name = game_name
         self.opponent = opponent
