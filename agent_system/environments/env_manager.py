@@ -599,6 +599,62 @@ class AppWorldEnvironmentManager(EnvironmentManagerBase):
                 postprocess_text_obs.append(obs)
         return postprocess_text_obs
 
+class AffineGameEnvironmentManager(EnvironmentManagerBase):
+    """
+    EnvironmentManager for Affine Game (e.g., Goofspiel).
+    """
+    def __init__(self, envs, projection_f, config):
+        self.memory = SimpleMemory()
+        super().__init__(envs, projection_f, config)
+        self.game_name = config.env.affine_game.get('game_name', 'goofspiel')
+
+    def reset(self, kwargs) -> Tuple[Dict[str, Any], List[Dict]]:
+        text_obs, infos = self.envs.reset()
+        self.memory.reset(batch_size=len(text_obs))
+        self.pre_text_obs = text_obs
+
+        # First turn: system prompt + formatted observation
+        full_text_obs = self.build_text_obs(text_obs, init=True)
+        return {'text': full_text_obs, 'image': None, 'anchor': text_obs}, infos
+
+    def step(self, text_actions: List[str]):
+        actions, valids = self.projection_f(text_actions)
+        text_obs, rewards, dones, infos = self.envs.step(actions)
+
+        self.memory.store({'text_obs': self.pre_text_obs, 'action': actions})
+        self.pre_text_obs = text_obs
+
+        # Subsequent turns: just formatted observation (no system prompt)
+        full_text_obs = self.build_text_obs(text_obs, init=False)
+
+        for i, info in enumerate(infos):
+            info['is_action_valid'] = to_numpy(valids[i])
+
+        return {'text': full_text_obs, 'image': None, 'anchor': text_obs}, to_numpy(rewards), to_numpy(dones), infos
+
+    def build_text_obs(self, text_obs: List[str], init: bool = False) -> List[str]:
+        """Build text observations. Init=True includes system prompt."""
+        result = []
+        for obs in text_obs:
+            if init:
+                # First turn: system prompt + observation
+                result.append(f"{GOOFSPIEL_SYSTEM_PROMPT}\n\n{obs}")
+            else:
+                # Subsequent turns: just the observation
+                result.append(obs)
+        return result
+
+    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
+        # Find the last entry with active masks
+        for i in reversed(range(len(total_batch_list[batch_idx]))):
+            batch_item = total_batch_list[batch_idx][i]
+            if batch_item['active_masks']:
+                info = total_infos[batch_idx][i]
+                won_value = float(info.get('won', 0))
+                success['success_rate'].append(won_value)
+                return
+
+
 def make_envs(config):
     """
     Create enviroments 
@@ -693,6 +749,37 @@ def make_envs(config):
         projection_f = partial(appworld_projection)
         envs = AppWorldEnvironmentManager(_envs, projection_f, config)
         val_envs = AppWorldEnvironmentManager(_val_envs, projection_f, config)
+        return envs, val_envs
+    elif "affine_game" in config.env.env_name.lower():
+        from agent_system.environments.env_package.affine_game import (
+            build_affine_game_envs, affine_game_projection
+        )
+        _envs = build_affine_game_envs(
+            server_urls=config.env.affine_game.server_urls,
+            game_name=config.env.affine_game.get('game_name', 'goofspiel'),
+            max_interactions=config.env.max_steps,
+            seed=config.env.seed,
+            env_num=config.data.train_batch_size,
+            group_n=group_n,
+            opponent=config.env.affine_game.get('opponent', 'mcts'),
+            resources_per_worker=resources_per_worker,
+            timeout=config.env.affine_game.get('timeout', 300),
+        )
+        _val_envs = build_affine_game_envs(
+            server_urls=config.env.affine_game.server_urls,
+            game_name=config.env.affine_game.get('game_name', 'goofspiel'),
+            max_interactions=config.env.max_steps,
+            seed=config.env.seed + 1000,
+            env_num=config.data.val_batch_size,
+            group_n=1,
+            opponent=config.env.affine_game.get('opponent', 'mcts'),
+            resources_per_worker=resources_per_worker,
+            timeout=config.env.affine_game.get('timeout', 300),
+        )
+
+        projection_f = partial(affine_game_projection)
+        envs = AffineGameEnvironmentManager(_envs, projection_f, config)
+        val_envs = AffineGameEnvironmentManager(_val_envs, projection_f, config)
         return envs, val_envs
     else:
         print("Environment not supported")

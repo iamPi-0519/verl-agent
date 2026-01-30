@@ -12,11 +12,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from .alfworld import *
-from .webshop import *
-from .sokoban import *
-from .gym_cards import *
-from .appworld import *
-from .search import *
-from .affine_game import *
